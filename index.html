@@ -1,0 +1,817 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>NISAR RiceRadar</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<style>
+  /* Layout: single-screen mission console. Left = SAR ingest that becomes a 16x12 GIS parcel map, timeline, analyze. Right = guide, or backscatter chart + KPIs once active. */
+  :root {
+    --bg: #020617;
+    --panel: #0b1220;
+    --line: #1e293b;
+    --fg: #e2e8f0;
+    --muted: #94a3b8;
+    --cyan: #22d3ee;
+    --emerald: #34d399;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --blue: #60a5fa;
+    --font-ui: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --font-data: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    box-sizing: border-box;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-ui);
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 0;
+    margin: 0;
+  }
+  #root { height: 100%; }
+  .mono { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .label { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  input[type=range].rr { -webkit-appearance: none; appearance: none; width: 100%; height: 22px; background: transparent; cursor: pointer; }
+  input[type=range].rr::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: linear-gradient(90deg, var(--cyan) var(--fill, 0%), var(--line) var(--fill, 0%)); }
+  input[type=range].rr::-moz-range-track { height: 4px; border-radius: 2px; background: var(--line); }
+  input[type=range].rr::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--cyan); }
+  input[type=range].rr::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--bg); border: 2px solid var(--cyan); margin-top: -6px; box-shadow: 0 0 0 4px rgba(34,211,238,.15); }
+  input[type=range].rr::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--bg); border: 2px solid var(--cyan); }
+  input[type=range].rr:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; border-radius: 4px; }
+  button:focus-visible, input[type=text]:focus-visible, [role=button]:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  button:disabled { cursor: not-allowed; }
+  @keyframes sweep { to { transform: rotate(360deg); } }
+  .sweep { animation: sweep 1.2s linear infinite; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .fade-in { animation: fadeIn 220ms ease-out both; }
+  .pcell { transition: background-color 380ms ease, box-shadow 160ms ease; cursor: crosshair; }
+  @media (prefers-reduced-motion: reduce) { .sweep, .fade-in { animation: none; } * { transition: none !important; } }
+</style>
+
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useRef, useEffect, useCallback, useMemo } = React;
+
+/* ---------- Lucide-style icons (inline) ---------- */
+const ICONS = {
+  radar: <><path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/><path d="M4 6h.01"/><path d="M2.29 9.62A10 10 0 1 0 21.31 8.35"/><path d="M16.24 7.76A6 6 0 1 0 8.23 16.67"/><path d="M12 18h.01"/><path d="M17.99 11.66A6 6 0 0 1 15.77 16.67"/><circle cx="12" cy="12" r="2"/><path d="m13.41 10.59 5.66-5.66"/></>,
+  upload: <><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M12 12v9"/><path d="m16 16-4-4-4 4"/></>,
+  droplets: <><path d="M7 16.3c2.2 0 4-1.83 4-4.05 0-1.16-.57-2.26-1.71-3.19S7.29 6.75 7 5.3c-.29 1.45-1.14 2.84-2.29 3.76S3 11.1 3 12.25c0 2.22 1.8 4.05 4 4.05z"/><path d="M12.56 6.6A10.97 10.97 0 0 0 14 3.02c.5 2.5 2 4.9 4 6.5s3 3.5 3 5.5a6.98 6.98 0 0 1-11.91 4.97"/></>,
+  sprout: <><path d="M7 20h10"/><path d="M10 20c5.5-2.5.8-6.4 3-10"/><path d="M9.5 9.4c1.1.8 1.8 2.2 2.3 3.7-2 .4-3.5.4-4.8-.3-1.2-.6-2.3-1.9-3-4.2 2.8-.5 4.4 0 5.5.8z"/><path d="M14.1 6a7 7 0 0 0-1.1 4c1.9-.1 3.3-.6 4.3-1.4 1-1 1.6-2.3 1.7-4.6-2.7.1-4 1-4.9 2z"/></>,
+  alert: <><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></>,
+  shield: <><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></>,
+  code: <><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></>,
+  pin: <><path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"/><circle cx="12" cy="10" r="3"/></>,
+  x: <><path d="M18 6 6 18"/><path d="m6 6 12 12"/></>,
+  scan: <><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></>,
+  calendar: <><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></>,
+  book: <><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></>,
+  arrow: <><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></>,
+  grid: <><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/><path d="M15 3v18"/></>,
+  image: <><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></>,
+};
+const Icon = ({ name, size = 16, className = '', ...rest }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true" {...rest}>{ICONS[name]}</svg>
+);
+
+/* ---------- Constants ---------- */
+const COLS = 16, ROWS = 12;
+const HA_PER_CELL = 150;                 // ~1.2 km x 1.2 km management block
+const LON0 = 105.69, LON_STEP = 0.18 / COLS;   // Can Tho / Mekong Delta window
+const LAT0 = 10.10,  LAT_STEP = 0.13 / ROWS;
+const KM_PER_CELL = 1.2;
+
+/* Fixed spatial mask: open-sea cells in the bottom-right of the map window.
+   Per column, the first row that is sea (everything below it is sea too). Edit this table to move the coastline. */
+const OCEAN_FROM_ROW = { 8: 11, 9: 10, 10: 10, 11: 9, 12: 9, 13: 8, 14: 8, 15: 7 };
+const OCEAN_MASK = new Set();
+Object.entries(OCEAN_FROM_ROW).forEach(([c, r0]) => { for (let r = r0; r < ROWS; r++) OCEAN_MASK.add(r * COLS + Number(c)); });
+const OCEAN_DB = -28.5;                  // specular return from open water, fixed on every date
+
+/* Seasonal brightness offset (dB-equivalent in 0-255 units): standing water at sowing darkens the scene,
+   canopy closure and heading brighten it toward harvest. */
+const SHIFT = [-70, -30, 0, 10, 55];
+const S_MINUS_L = [2, 1, -0.5, -1.5, -2];
+
+const MILESTONES = [
+  { date: 'Dec 01', stage: 'Flooding / Sowing',   short: 'Flooding/Sowing',   day: 0,  L: -24, S: -22,   flooded: 11900, parcels: 79,
+    risk: 'watch', rec: 'Standing water is expected at sowing; delay seeding in the lowest parcels.' },
+  { date: 'Dec 25', stage: 'Tillering',            short: 'Tillering',         day: 24, L: -18, S: -17,   flooded: 6200,  parcels: 41,
+    risk: 'low',   rec: 'Water is draining on schedule; keep field levels at 3-5 cm.' },
+  { date: 'Jan 18', stage: 'Stem Elongation',      short: 'Stem Elongation',   day: 48, L: -14, S: -14.5, flooded: 1800,  parcels: 12,
+    risk: 'low',   rec: 'Canopy is closing; schedule nitrogen top-dressing this week.' },
+  { date: 'Feb 11', stage: 'Heading / Flowering',  short: 'Heading/Flowering', day: 72, L: -12, S: -13.5, flooded: 900,   parcels: 6,
+    risk: 'watch', rec: 'Flowering is sensitive to storm surge; check dike and sluice gates.' },
+  { date: 'Mar 07', stage: 'Harvest Ready',        short: 'Harvest Ready',     day: 96, L: -15, S: -17,   flooded: 2550,  parcels: 17,
+    risk: 'high',  rec: 'Rising tide and rain risk: bring harvest forward on low-lying parcels.' },
+];
+const RISK = {
+  low:   { label: 'Low Risk',                        color: 'var(--emerald)', icon: 'shield', bg: 'rgba(52,211,153,.07)' },
+  watch: { label: 'Watch',                           color: 'var(--amber)',   icon: 'alert',  bg: 'rgba(251,191,36,.07)' },
+  high:  { label: 'High Flood Risk - Harvest Early', color: 'var(--red)',     icon: 'alert',  bg: 'rgba(248,113,113,.08)' },
+};
+const CLASSES = {
+  flooded: { name: 'Flooded',                bg: 'rgba(37,99,235,.88)',  swatch: '#2563eb' },
+  growing: { name: 'Active Growth',          bg: 'rgba(16,185,129,.82)', swatch: '#10b981' },
+  mature:  { name: 'Mature - Harvest Ready', bg: 'rgba(245,158,11,.88)', swatch: '#f59e0b' },
+  ocean:   { name: 'Open Sea',               bg: 'rgba(23,37,120,.96)',  swatch: '#1e3a8a' },
+  nodata:  { name: 'No data',                bg: 'rgba(15,23,42,.75)',   swatch: '#0f172a' },
+};
+
+/* ---------- Radar image interpretation guide content ---------- */
+const GUIDE = [
+  {
+    key: 'dark', title: 'Dark / Black', meaning: 'Water & flooding', color: '#60a5fa', mapAs: 'Deep blue cell',
+    swatch: 'radial-gradient(circle at 30% 30%, #11172a, #02030a)',
+    why: 'Smooth water acts like a mirror. It reflects the radar pulse away from the satellite, so almost no signal comes back and the pixel stays black (specular reflection).',
+    use: 'Brightness under 65 is classified Flooded and counted into Flooded Area (ha).',
+  },
+  {
+    key: 'bright', title: 'Bright / White', meaning: 'Mature rice, dry soil & urban', color: '#fbbf24', mapAs: 'Amber cell',
+    swatch: 'radial-gradient(circle at 30% 30%, #ffffff, #cbd5e1)',
+    why: 'Double-bounce from buildings and strong volume scattering from dense, mature rice both send the signal straight back to the satellite.',
+    use: 'Brightness over 180 is classified Mature / Dry, meaning ready for harvest. It is never counted as flooded.',
+  },
+  {
+    key: 'magenta', title: 'Magenta / Pink', meaning: 'Vegetation & mixed terrain', color: '#34d399', mapAs: 'Emerald cell',
+    swatch: 'radial-gradient(circle at 30% 30%, #f0abfc, #a21caf 60%, #581c87)',
+    why: 'In false color, polarizations blend into pink and purple over growing paddies: young plants, wet soil and stems together (volume scattering, tillering to stem elongation).',
+    use: 'Mid-tone and magenta pixels are classified Active Growth and are left out of the flooded total.',
+  },
+];
+
+/* ---------- Helpers ---------- */
+function useSize(ref) {
+  const [size, setSize] = useState({ w: 600, h: 260 });
+  useEffect(() => {
+    if (!ref.current) return;
+    const el = ref.current;
+    const ro = new ResizeObserver(([e]) => {
+      const { width, height } = e.contentRect;
+      if (width > 0 && height > 0) setSize({ w: width, h: height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return size;
+}
+const fmt = (n) => Math.round(n).toLocaleString('en-US');
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const toDb = (eb) => -30 + (clamp(eb, 0, 255) / 255) * 20;
+const rowLetter = (r) => String.fromCharCode(65 + r);
+
+/* Real canvas pixel decoding: stretch the scene onto a 128x96 canvas and average each 8x8 block into one parcel */
+function sampleGrid(url) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const W = 128, H = 96;
+        const c = document.createElement('canvas');
+        c.width = W; c.height = H;
+        const ctx = c.getContext('2d', { willReadFrequently: true });
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, 0, 0, W, H);
+        const d = ctx.getImageData(0, 0, W, H).data;
+        const bw = W / COLS, bh = H / ROWS;
+        const cells = [];
+        for (let r = 0; r < ROWS; r++) {
+          for (let col = 0; col < COLS; col++) {
+            let sr = 0, sg = 0, sb = 0, n = 0, tot = 0;
+            for (let y = Math.floor(r * bh); y < Math.floor((r + 1) * bh); y++) {
+              for (let x = Math.floor(col * bw); x < Math.floor((col + 1) * bw); x++) {
+                const i = (y * W + x) * 4;
+                tot++;
+                if (d[i + 3] < 20) continue;                          // transparent padding
+                if (d[i] >= 250 && d[i + 1] >= 250 && d[i + 2] >= 250) continue; // blank white border
+                sr += d[i]; sg += d[i + 1]; sb += d[i + 2]; n++;
+              }
+            }
+            const id = `${rowLetter(r)}${col + 1}`;
+            const isOcean = OCEAN_MASK.has(r * COLS + col);
+            if (n < tot * 0.4) { cells.push({ r, c: col, id, nodata: true, isOcean, lum: 0, mag: 0 }); continue; }
+            const R = sr / n, G = sg / n, B = sb / n;
+            cells.push({ r, c: col, id, nodata: false, isOcean, R, G, B,
+              lum: 0.2126 * R + 0.7152 * G + 0.0722 * B,
+              mag: (R + B) / 2 - G });                                 // high R+B over G = magenta
+          }
+        }
+        if (cells.every((x) => x.nodata)) return resolve(null);
+        resolve(cells);
+      } catch (e) { resolve(null); }
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+
+/* Classify every parcel for one timeline date */
+function classifyGrid(cells, t) {
+  const risk = MILESTONES[t].risk;
+  const out = cells.map((cell) => {
+    if (cell.nodata) return { ...cell, cls: 'nodata', eb: 0, db: null, alert: false };
+    // Fixed spatial mask: open sea never changes with the timeline
+    if (cell.isOcean) return { ...cell, cls: 'ocean', status: 'Open Sea', eb: 0, db: OCEAN_DB, alert: false };
+    const eb = clamp(cell.lum + SHIFT[t], 0, 255);
+    const magenta = cell.mag > 20;
+    let cls = 'growing';
+    if (eb < 65) cls = 'flooded';
+    else if (eb > (magenta ? 205 : 180)) cls = 'mature';
+    return { ...cell, cls, eb, db: toDb(eb), alert: false };
+  });
+  // High-risk transition cells: dry or growing parcels touching standing water
+  if (risk !== 'low') {
+    out.forEach((cell) => {
+      if (cell.cls === 'flooded' || cell.cls === 'nodata' || cell.cls === 'ocean') return;
+      if (risk === 'watch' && cell.eb > 110) return;
+      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+        if (!dr && !dc) continue;
+        const r = cell.r + dr, c = cell.c + dc;
+        if (r < 0 || c < 0 || r >= ROWS || c >= COLS) continue;
+        if (out[r * COLS + c].cls === 'flooded') { cell.alert = true; return; }
+      }
+    });
+  }
+  const counts = { flooded: 0, growing: 0, mature: 0, ocean: 0, alert: 0 };
+  out.forEach((c) => { if (counts[c.cls] !== undefined) counts[c.cls]++; if (c.alert) counts.alert++; });
+  return { cells: out, counts };
+}
+
+/* Scene-mean L-band / S-band backscatter derived from the decoded pixels */
+function seriesFrom(cells) {
+  const valid = cells.filter((c) => !c.nodata && !c.isOcean);
+  const L = SHIFT.map((s) => valid.reduce((a, c) => a + toDb(c.lum + s), 0) / valid.length);
+  const S = L.map((v, i) => clamp(v + S_MINUS_L[i], -30, -10));
+  return { L, S };
+}
+
+/* Raw shares of each radar zone in the uploaded image (before the seasonal offset) */
+function zoneShares(cells) {
+  const valid = cells.filter((c) => !c.nodata);
+  if (!valid.length) return null;
+  const n = valid.length;
+  return {
+    dark: valid.filter((c) => c.lum < 65).length / n,
+    bright: valid.filter((c) => c.lum > 180).length / n,
+    magenta: valid.filter((c) => c.lum >= 65 && c.lum <= 180 && c.mag > 20).length / n,
+  };
+}
+
+/* ---------- Interpretation guide (cards) ---------- */
+function Guide({ stats }) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 min-h-0">
+      {GUIDE.map((g) => {
+        const share = stats ? stats[g.key] : null;
+        return (
+          <article key={g.key} className="rounded-lg p-3 flex flex-col gap-2 min-w-0" style={{ background: 'rgba(2,6,23,.6)', border: `1px solid ${g.color}55` }}>
+            <header className="flex items-center gap-2.5">
+              <span className="w-9 h-9 rounded-md shrink-0" style={{ background: g.swatch, border: '1px solid #475569' }} />
+              <div className="min-w-0">
+                <h4 className="text-[13px] font-semibold leading-tight">{g.title}</h4>
+                <p className="text-[11px]" style={{ color: 'var(--muted)' }}>{g.meaning}</p>
+              </div>
+            </header>
+            <div>
+              <p className="label mb-0.5">What the radar sees</p>
+              <p className="text-[11.5px] leading-snug">{g.why}</p>
+            </div>
+            <div>
+              <p className="label mb-0.5">How RiceRadar uses it</p>
+              <p className="text-[11.5px] leading-snug">{g.use}</p>
+            </div>
+            <p className="text-[11px] flex items-center gap-1.5 mt-auto" style={{ color: 'var(--muted)' }}>
+              Shown on map as <i className="inline-block w-3 h-3 rounded-sm" style={{ background: g.color }} /> <span style={{ color: g.color }}>{g.mapAs}</span>
+            </p>
+            {share != null && (
+              <div>
+                <div className="flex justify-between mono text-[10.5px] mb-1">
+                  <span style={{ color: 'var(--muted)' }}>Found in your image</span>
+                  <span style={{ color: g.color }}>{(share * 100).toFixed(0)}%</span>
+                </div>
+                <div className="h-1.5 rounded-full" style={{ background: 'var(--line)' }}>
+                  <div className="h-1.5 rounded-full" style={{ width: `${Math.min(100, share * 100)}%`, background: g.color }} />
+                </div>
+              </div>
+            )}
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ---------- Backscatter chart ---------- */
+function BackscatterChart({ idx, series }) {
+  const wrap = useRef(null);
+  const { w, h } = useSize(wrap);
+  const m = { l: 46, r: 18, t: 14, b: 30 };
+  const iw = Math.max(10, w - m.l - m.r), ih = Math.max(10, h - m.t - m.b);
+  const x = (i) => m.l + (iw * i) / (MILESTONES.length - 1);
+  const y = (v) => m.t + ih * (1 - (v + 30) / 20);
+  const ticks = [-30, -25, -20, -15, -10];
+  const path = (arr) => arr.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const area = `${path(series.L)} L${x(4)},${y(-30)} L${x(0)},${y(-30)} Z`;
+  const curL = series.L[idx], curS = series.S[idx];
+  const tipLeft = idx > 2;
+  return (
+    <div ref={wrap} className="relative flex-1 min-h-0 w-full">
+      <svg width={w} height={h} role="img" aria-label="L-band and S-band backscatter in dB across five crop milestones" style={{ display: 'block' }}>
+        <defs>
+          <linearGradient id="lfill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.22" />
+            <stop offset="100%" stopColor="#22d3ee" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {ticks.map((t) => (
+          <g key={t}>
+            <line x1={m.l} x2={m.l + iw} y1={y(t)} y2={y(t)} stroke="#1e293b" strokeWidth="1" strokeDasharray={t === -30 ? '' : '2 4'} />
+            <text x={m.l - 8} y={y(t) + 3.5} textAnchor="end" fontSize="10" fill="#94a3b8" fontFamily="var(--font-data)">{t} dB</text>
+          </g>
+        ))}
+        {MILESTONES.map((p, i) => (
+          <text key={p.date} x={x(i)} y={h - 9} textAnchor="middle" fontSize="10" fontFamily="var(--font-data)"
+                fill={i === idx ? '#22d3ee' : '#94a3b8'} fontWeight={i === idx ? 700 : 400}>{p.date}</text>
+        ))}
+        <path d={area} fill="url(#lfill)" />
+        <path d={path(series.S)} fill="none" stroke="#60a5fa" strokeWidth="2" strokeDasharray="6 5" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={path(series.L)} fill="none" stroke="#22d3ee" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        {MILESTONES.map((p, i) => (
+          <g key={i}>
+            <circle cx={x(i)} cy={y(series.S[i])} r="3" fill="#020617" stroke="#60a5fa" strokeWidth="1.5" />
+            <circle cx={x(i)} cy={y(series.L[i])} r="3.5" fill="#020617" stroke="#22d3ee" strokeWidth="1.8" />
+          </g>
+        ))}
+        <g style={{ transform: `translateX(${x(idx)}px)`, transition: 'transform 280ms cubic-bezier(.3,.7,.2,1)' }}>
+          <line x1="0" x2="0" y1={m.t} y2={m.t + ih} stroke="#fbbf24" strokeWidth="1.5" strokeDasharray="4 3" />
+          <circle cx="0" cy={y(curL)} r="6" fill="#22d3ee" stroke="#020617" strokeWidth="2" />
+          <circle cx="0" cy={y(curS)} r="5" fill="#60a5fa" stroke="#020617" strokeWidth="2" />
+          <g transform={`translate(${tipLeft ? -108 : 10}, ${m.t + 4})`}>
+            <rect width="98" height="40" rx="6" fill="#0b1220" stroke="#334155" />
+            <text x="9" y="16" fontSize="10" fill="#22d3ee" fontFamily="var(--font-data)">L-band {curL.toFixed(1)} dB</text>
+            <text x="9" y="31" fontSize="10" fill="#60a5fa" fontFamily="var(--font-data)">S-band {curS.toFixed(1)} dB</text>
+          </g>
+        </g>
+      </svg>
+    </div>
+  );
+}
+
+/* ---------- KPI card ---------- */
+function Kpi({ label, icon, accent, children, border, bg }) {
+  return (
+    <div className="panel p-3 flex flex-col min-w-0 min-h-0"
+         style={{ borderColor: border || 'var(--line)', background: bg || 'var(--panel)' }}>
+      <div className="flex items-center gap-1.5 shrink-0" style={{ color: accent }}>
+        <Icon name={icon} size={14} />
+        <span className="label" style={{ color: 'var(--muted)' }}>{label}</span>
+      </div>
+      <div className="flex-1 min-h-0 flex flex-col justify-center">{children}</div>
+    </div>
+  );
+}
+
+/* ---------- Parcel map (raw SAR or classified grid) ---------- */
+function ParcelMap({ url, imgFailed, onImgError, view, grid, scanning, progress, notes, dateLabel }) {
+  const area = useRef(null);
+  const { w, h } = useSize(area);
+  const [hover, setHover] = useState(null);
+  const [sel, setSel] = useState(null);
+  const AX_L = 38, AX_B = 18;
+  const availW = Math.max(60, w - AX_L - 4), availH = Math.max(45, h - AX_B - 4);
+  const mapW = Math.min(availW, (availH * 4) / 3), mapH = (mapW * 3) / 4;
+  const cw = mapW / COLS, ch = mapH / ROWS;
+  const classified = view === 'map' && grid;
+  const focus = classified ? (hover || sel) : null;
+  const fc = focus ? grid.cells[focus.r * COLS + focus.c] : null;
+
+  useEffect(() => { if (!classified) { setHover(null); } }, [classified]);
+
+  // tooltip placement inside the map box
+  let tip = null;
+  if (fc) {
+    const left = (fc.c + 0.5) * cw;
+    const below = fc.r < 3;
+    const anchor = fc.c < 4 ? '0%' : fc.c > COLS - 5 ? '-100%' : '-50%';
+    const lat = (LAT0 - (fc.r + 0.5) * LAT_STEP).toFixed(3), lon = (LON0 + (fc.c + 0.5) * LON_STEP).toFixed(3);
+    const alignLeft = fc.c < 4 ? fc.c * cw : fc.c > COLS - 5 ? (fc.c + 1) * cw : left;
+    tip = (
+      <div className="absolute z-20 pointer-events-none rounded-md px-2.5 py-1.5 whitespace-nowrap fade-in"
+           style={{ left: alignLeft, top: below ? (fc.r + 1) * ch + 6 : fc.r * ch - 6,
+                    transform: `translate(${anchor}, ${below ? '0' : '-100%'})`,
+                    background: '#020617', border: `1px solid ${fc.cls === 'nodata' ? '#334155' : CLASSES[fc.cls].swatch}`, boxShadow: '0 8px 24px rgba(0,0,0,.6)' }}>
+        <div className="mono text-[11px] font-semibold">
+          Parcel #{fc.id} • Status: {fc.cls === 'flooded' ? 'Flooded' : CLASSES[fc.cls].name} • {fc.db == null ? 'No SAR return' : `Backscatter: ${fc.db.toFixed(1)} dB`}
+        </div>
+        <div className="mono text-[10px] mt-0.5" style={{ color: 'var(--muted)' }}>
+          {lat}°N {lon}°E · {dateLabel}{fc.alert ? ' · ' : ''}{fc.alert && <span style={{ color: 'var(--red)' }}>Flood alert: next to standing water</span>}
+        </div>
+      </div>
+    );
+  }
+
+  const lonTicks = [0, 4, 8, 12, 16], latTicks = [0, 3, 6, 9, 12];
+  return (
+    <div ref={area} className="absolute inset-0 grid place-items-center">
+      <div className="relative" style={{ width: mapW + AX_L, height: mapH + AX_B }}>
+        {/* axis labels */}
+        {latTicks.map((r) => (
+          <span key={r} className="mono absolute text-[9px]" style={{ left: 0, width: AX_L - 6, textAlign: 'right', top: r * ch - 5, color: 'var(--muted)' }}>{(LAT0 - r * LAT_STEP).toFixed(2)}°N</span>
+        ))}
+        {lonTicks.map((c) => (
+          <span key={c} className="mono absolute text-[9px]" style={{ left: AX_L + c * cw, top: mapH + 4, transform: 'translateX(-50%)', color: 'var(--muted)' }}>{(LON0 + c * LON_STEP).toFixed(2)}°E</span>
+        ))}
+
+        <div className="absolute overflow-hidden rounded-sm" style={{ left: AX_L, top: 0, width: mapW, height: mapH, border: '1px solid #334155', background: '#02040a' }}>
+          {/* SAR basemap */}
+          {!imgFailed ? (
+            <img src={url} alt="Uploaded SAR radar scene" onError={onImgError} draggable={false}
+                 className="absolute inset-0 w-full h-full select-none"
+                 style={{ objectFit: 'fill', opacity: classified ? 0.4 : 1, transition: 'opacity 300ms' }} />
+          ) : (
+            <div className="absolute inset-0 grid place-items-center text-center px-4" style={{ color: 'var(--muted)' }}>
+              <div><Icon name="radar" size={26} className="mx-auto mb-2" /><p className="text-[11px]">This file type can't be previewed or decoded in the browser. Analysis uses the regional baseline.</p></div>
+            </div>
+          )}
+
+          {/* classified parcels */}
+          {classified && (
+            <div className="absolute inset-0 grid" onMouseLeave={() => setHover(null)}
+                 style={{ gridTemplateColumns: `repeat(${COLS}, 1fr)`, gridTemplateRows: `repeat(${ROWS}, 1fr)`, gap: 1 }}
+                 aria-label="Classified parcel grid, 16 by 12">
+              {grid.cells.map((cell) => {
+                const isF = focus && focus.r === cell.r && focus.c === cell.c;
+                return (
+                  <div key={cell.id} className="pcell"
+                       onMouseEnter={() => setHover({ r: cell.r, c: cell.c })}
+                       onClick={() => setSel((s) => (s && s.r === cell.r && s.c === cell.c ? null : { r: cell.r, c: cell.c }))}
+                       style={{ background: CLASSES[cell.cls].bg,
+                                boxShadow: isF ? 'inset 0 0 0 2px #fff' : cell.alert ? 'inset 0 0 0 2px #f87171' : 'none' }} />
+                );
+              })}
+            </div>
+          )}
+
+          {/* map furniture */}
+          <div className="absolute top-1.5 left-1.5 mono text-[9.5px] px-1.5 py-0.5 rounded flex items-center gap-1 max-w-[70%]" style={{ background: 'rgba(2,6,23,.82)', border: '1px solid #334155' }}>
+            <Icon name="pin" size={10} /> <span className="truncate">{notes || 'Can Tho · An Giang, Mekong Delta'}</span>
+          </div>
+          <div className="absolute top-1.5 right-1.5 flex flex-col items-center mono text-[9px] px-1.5 py-1 rounded" style={{ background: 'rgba(2,6,23,.82)', border: '1px solid #334155', color: 'var(--cyan)' }}>
+            <svg width="10" height="12" viewBox="0 0 10 12"><path d="M5 0 9 11 5 8.5 1 11Z" fill="currentColor" /></svg>N
+          </div>
+          <div className="absolute bottom-1.5 left-1.5 mono text-[9px] flex flex-col gap-0.5" style={{ color: '#e2e8f0', textShadow: '0 1px 2px #000' }}>
+            <div style={{ width: (5 / KM_PER_CELL) * cw, height: 4, borderLeft: '1.5px solid #e2e8f0', borderRight: '1.5px solid #e2e8f0', borderBottom: '1.5px solid #e2e8f0' }} />
+            5 km
+          </div>
+
+          {scanning && (
+            <div className="absolute inset-0 pointer-events-none" style={{ background: 'rgba(2,6,23,.3)' }}>
+              <div className="absolute left-0 right-0 h-0.5" style={{ top: `${progress * 100}%`, background: 'var(--cyan)', boxShadow: '0 0 14px 3px rgba(34,211,238,.7)' }} />
+            </div>
+          )}
+          {tip}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- App ---------- */
+function App() {
+  const [file, setFile] = useState(null);
+  const [url, setUrl] = useState(null);
+  const [imgFailed, setImgFailed] = useState(false);
+  const [cells, setCells] = useState(null);
+  const [dragging, setDragging] = useState(false);
+  const [notes, setNotes] = useState('');
+  const [idx, setIdx] = useState(0);
+  const [scanning, setScanning] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [view, setView] = useState('raw');
+  const [touched, setTouched] = useState(false);
+  const inputRef = useRef(null);
+  const cellsRef = useRef(null);
+  const tokenRef = useRef(0);
+
+  useEffect(() => () => { if (url) URL.revokeObjectURL(url); }, [url]);
+
+  const active = !!file || !!result;
+
+  const accept = useCallback((f) => {
+    if (!f) return;
+    const okType = /^image\/(png|jpe?g|tiff?)$/i.test(f.type) || /\.(png|jpe?g|tiff?)$/i.test(f.name);
+    if (!okType) { setError('Use a .png, .jpg or .tiff radar image.'); return; }
+    setError('');
+    const u = URL.createObjectURL(f);
+    setUrl((old) => { if (old) URL.revokeObjectURL(old); return u; });
+    setFile(f); setImgFailed(false); setResult(null); setGuideOpen(false); setView('raw');
+    setCells(null); cellsRef.current = null;
+    const token = ++tokenRef.current;
+    sampleGrid(u).then((g) => { if (token === tokenRef.current) { cellsRef.current = g; setCells(g); } });
+  }, []);
+
+  const clear = () => {
+    tokenRef.current++;
+    setUrl((old) => { if (old) URL.revokeObjectURL(old); return null; });
+    setFile(null); setResult(null); setImgFailed(false); setError(''); setGuideOpen(false); setTouched(false);
+    setCells(null); cellsRef.current = null; setView('raw');
+    if (inputRef.current) inputRef.current.value = '';
+  };
+
+  const analyze = async () => {
+    if (scanning) return;
+    setScanning(true); setProgress(0); setResult(null);
+    const t0 = performance.now();
+    await new Promise((res) => {
+      const tick = () => {
+        const p = Math.min(1, (performance.now() - t0) / 1200);
+        setProgress(p);
+        if (p < 1) setTimeout(tick, 40); else res();
+      };
+      tick();
+    });
+    const g = cellsRef.current;
+    setResult({ notes: notes.trim(), hadImage: !!file, hasGrid: !!g });
+    setView(g ? 'map' : 'raw');
+    setScanning(false);
+  };
+
+  const cur = MILESTONES[idx];
+  const risk = RISK[cur.risk];
+  const grid = useMemo(() => (cells && result ? classifyGrid(cells, idx) : null), [cells, result, idx]);
+  const series = useMemo(() => (cells ? seriesFrom(cells) : { L: MILESTONES.map((m) => m.L), S: MILESTONES.map((m) => m.S) }), [cells]);
+  const shares = useMemo(() => (cells ? zoneShares(cells) : null), [cells]);
+  const flooded = result ? (grid ? grid.counts.flooded * HA_PER_CELL : cur.flooded) : null;
+  const parcels = result ? (grid ? grid.counts.flooded : cur.parcels) : null;
+  const fill = (idx / 4) * 100;
+  const canMap = !!(result && result.hasGrid);
+
+  return (
+    <div className="h-screen flex flex-col overflow-auto lg:overflow-hidden">
+      {/* Header */}
+      <header className="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 border-b" style={{ borderColor: 'var(--line)' }}>
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="grid place-items-center w-7 h-7 rounded-md" style={{ background: 'rgba(34,211,238,.1)', color: 'var(--cyan)', border: '1px solid rgba(34,211,238,.3)' }}>
+            <Icon name="radar" size={16} />
+          </span>
+          <h1 className="text-[15px] font-semibold tracking-tight truncate">NISAR RiceRadar <span style={{ color: 'var(--muted)' }} className="font-normal">| NASA-ISRO Mekong Delta Monitoring</span></h1>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="mono text-[11px] px-2 py-1 rounded-full flex items-center gap-1.5" style={{ color: 'var(--emerald)', background: 'rgba(52,211,153,.08)', border: '1px solid rgba(52,211,153,.35)' }}>
+            <Icon name="sprout" size={12} /> Winter-Spring Crop 2026
+          </span>
+          <span className="mono text-[11px] px-2 py-1 rounded-full flex items-center gap-1.5" style={{ color: 'var(--cyan)', background: 'rgba(34,211,238,.08)', border: '1px solid rgba(34,211,238,.35)' }}>
+            <Icon name="code" size={12} /> Open Source (MIT)
+          </span>
+        </div>
+      </header>
+
+      <main className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-3 py-3">
+        {/* LEFT */}
+        <section className="lg:col-span-5 panel p-3 flex flex-col gap-2.5 min-h-0 min-w-0">
+          <div className="flex items-center justify-between gap-2 shrink-0">
+            <span className="label">{file ? 'Parcel Map' : 'Upload SAR Image'}</span>
+            {file ? (
+              <div className="flex rounded-md overflow-hidden text-[11px]" style={{ border: '1px solid #334155' }} role="group" aria-label="View mode">
+                <button onClick={() => setView('map')} disabled={!canMap} title={canMap ? '' : 'Run Analyze Radar Data first'}
+                        className="px-2.5 py-1 flex items-center gap-1.5 disabled:opacity-40"
+                        style={{ background: view === 'map' ? 'rgba(34,211,238,.15)' : 'transparent', color: view === 'map' ? 'var(--cyan)' : 'var(--muted)' }}>
+                  <Icon name="grid" size={12} /> Classified Parcel Map
+                </button>
+                <button onClick={() => setView('raw')}
+                        className="px-2.5 py-1 flex items-center gap-1.5"
+                        style={{ background: view === 'raw' ? 'rgba(34,211,238,.15)' : 'transparent', color: view === 'raw' ? 'var(--cyan)' : 'var(--muted)', borderLeft: '1px solid #334155' }}>
+                  <Icon name="image" size={12} /> Raw SAR Image
+                </button>
+              </div>
+            ) : (
+              <span className="mono text-[10px]" style={{ color: 'var(--muted)' }}>L-band · .png .jpg .tiff</span>
+            )}
+          </div>
+
+          <div className="relative flex-1 min-h-[240px] lg:min-h-0">
+            <input ref={inputRef} id="sar-file" type="file" accept=".png,.jpg,.jpeg,.tif,.tiff,image/png,image/jpeg,image/tiff" className="hidden"
+                   onChange={(e) => accept(e.target.files[0])} />
+            {!file ? (
+              <div role="button" tabIndex={0}
+                   onClick={() => inputRef.current.click()}
+                   onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inputRef.current.click(); } }}
+                   onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+                   onDragLeave={() => setDragging(false)}
+                   onDrop={(e) => { e.preventDefault(); setDragging(false); accept(e.dataTransfer.files[0]); }}
+                   className="absolute inset-0 rounded-lg flex flex-col items-center justify-center gap-2 text-center cursor-pointer transition-colors px-4"
+                   style={{ border: `1.5px dashed ${dragging ? 'var(--cyan)' : '#334155'}`, background: dragging ? 'rgba(34,211,238,.06)' : 'rgba(15,23,42,.5)' }}>
+                <span className="grid place-items-center w-14 h-14 rounded-full" style={{ background: 'rgba(34,211,238,.08)', color: 'var(--cyan)', border: '1px solid rgba(34,211,238,.25)' }}>
+                  <Icon name="radar" size={28} />
+                </span>
+                <p className="text-sm font-medium">Drop a SAR radar image here</p>
+                <p className="text-xs" style={{ color: 'var(--muted)' }}>It becomes a 16 × 12 parcel map of the Mekong Delta</p>
+                <span className="mono text-[11px] inline-flex items-center gap-1.5 mt-1 px-2.5 py-1 rounded-md" style={{ border: '1px solid #334155', color: 'var(--fg)' }}>
+                  <Icon name="upload" size={12} /> Upload SAR Image
+                </span>
+                {error && <p className="text-xs mt-1" style={{ color: 'var(--red)' }} role="alert">{error}</p>}
+              </div>
+            ) : (
+              <>
+                <ParcelMap url={url} imgFailed={imgFailed} onImgError={() => setImgFailed(true)} view={view} grid={grid}
+                           scanning={scanning} progress={progress} notes={result ? result.notes : notes.trim()} dateLabel={cur.date} />
+                <button onClick={clear} aria-label="Remove image" className="absolute top-0 right-0 z-30 grid place-items-center w-6 h-6 rounded-md"
+                        style={{ background: 'rgba(2,6,23,.85)', border: '1px solid #334155', color: 'var(--fg)' }}>
+                  <Icon name="x" size={12} />
+                </button>
+              </>
+            )}
+          </div>
+
+          {/* Legend */}
+          {file && (
+            <div className="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] rounded-md px-2.5 py-1.5" style={{ background: 'rgba(2,6,23,.6)', border: '1px solid var(--line)' }}>
+              {view === 'map' && grid ? (
+                <>
+                  <span className="flex items-center gap-1.5"><i className="inline-block w-3 h-3 rounded-sm" style={{ background: CLASSES.flooded.swatch }} /> Blue = Flooded / Water <b className="mono font-medium" style={{ color: 'var(--muted)' }}>{grid.counts.flooded}</b></span>
+                  <span className="flex items-center gap-1.5"><i className="inline-block w-3 h-3 rounded-sm" style={{ background: CLASSES.growing.swatch }} /> Green = Growing Rice <b className="mono font-medium" style={{ color: 'var(--muted)' }}>{grid.counts.growing}</b></span>
+                  <span className="flex items-center gap-1.5"><i className="inline-block w-3 h-3 rounded-sm" style={{ background: CLASSES.mature.swatch }} /> Amber = Mature / Dry <b className="mono font-medium" style={{ color: 'var(--muted)' }}>{grid.counts.mature}</b></span>
+                  <span className="flex items-center gap-1.5"><i className="inline-block w-3 h-3 rounded-sm" style={{ border: '2px solid var(--red)' }} /> Red Outline = Flood Alert <b className="mono font-medium" style={{ color: 'var(--muted)' }}>{grid.counts.alert}</b></span>
+                  <span className="flex items-center gap-1.5"><i className="inline-block w-3 h-3 rounded-sm" style={{ background: CLASSES.ocean.swatch }} /> Deep Blue = Open Sea <b className="mono font-medium" style={{ color: 'var(--muted)' }}>{grid.counts.ocean}</b></span>
+                </>
+              ) : (
+                <>
+                  <span className="flex items-center gap-1.5"><i className="inline-block w-3 h-3 rounded-sm" style={{ background: '#05070d', border: '1px solid #475569' }} /> Dark = Water</span>
+                  <span className="flex items-center gap-1.5"><i className="inline-block w-3 h-3 rounded-sm" style={{ background: '#e2e8f0' }} /> Bright = Mature / Urban</span>
+                  <span className="flex items-center gap-1.5"><i className="inline-block w-3 h-3 rounded-sm" style={{ background: 'linear-gradient(135deg,#f0abfc,#a21caf)' }} /> Pink = Growing</span>
+                  {!result && <span style={{ color: 'var(--muted)' }}>Press Analyze to build the parcel map.</span>}
+                </>
+              )}
+              <button onClick={() => setGuideOpen(true)} className="ml-auto flex items-center gap-1 underline underline-offset-2" style={{ color: 'var(--cyan)' }}>
+                <Icon name="book" size={11} /> How to read
+              </button>
+            </div>
+          )}
+
+          {/* Timeline */}
+          <div className="shrink-0 pt-1.5" style={{ borderTop: '1px solid var(--line)' }}>
+            <div className="flex items-center justify-between mb-0.5">
+              <span className="label flex items-center gap-1.5"><Icon name="calendar" size={11} /> Crop Timeline</span>
+              <span className="mono text-[11px]" style={{ color: 'var(--cyan)' }}>{cur.date} · {cur.stage}</span>
+            </div>
+            <input type="range" className="rr" min="0" max="4" step="1" value={idx}
+                   style={{ '--fill': `${fill}%` }}
+                   aria-label="Crop milestone, December 1 to March 7" aria-valuetext={`${cur.date} ${cur.stage}`}
+                   onChange={(e) => { setIdx(Number(e.target.value)); setTouched(true); }} />
+            <div className="flex justify-between gap-1 -mt-0.5">
+              {MILESTONES.map((p, i) => (
+                <button key={p.date} onClick={() => { setIdx(i); setTouched(true); }} className="flex-1 min-w-0 text-center rounded px-0.5 py-0.5"
+                        style={{ color: i === idx ? 'var(--cyan)' : 'var(--muted)' }}>
+                  <span className="mono block text-[10px] font-semibold">{p.date}</span>
+                  <span className="block text-[9.5px] leading-tight truncate">{p.short}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Notes + analyze */}
+          <div className="shrink-0 flex flex-col gap-1">
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input id="notes" type="text" value={notes} onChange={(e) => setNotes(e.target.value)}
+                     aria-label="Location and image notes" placeholder="e.g., Can Tho Province - Parcel #42"
+                     className="flex-1 min-w-0 rounded-md px-3 py-2 text-sm placeholder:text-slate-600"
+                     style={{ background: 'var(--bg)', border: '1px solid #334155', color: 'var(--fg)' }} />
+              <button onClick={analyze} disabled={scanning}
+                      className="relative overflow-hidden rounded-md px-4 py-2 text-sm font-semibold flex items-center justify-center gap-2 shrink-0 disabled:cursor-wait"
+                      style={{ background: 'var(--cyan)', color: '#04202a', minWidth: 190 }}>
+                {scanning && <span className="absolute inset-y-0 left-0" style={{ width: `${progress * 100}%`, background: 'rgba(255,255,255,.35)' }} />}
+                <span className="relative flex items-center gap-2">
+                  <Icon name={scanning ? 'scan' : 'radar'} size={16} className={scanning ? 'sweep' : ''} />
+                  {scanning ? `Scanning… ${Math.round(progress * 100)}%` : 'Analyze Radar Data'}
+                </span>
+              </button>
+            </div>
+            <p className="mono text-[10.5px] min-h-[14px]" style={{ color: result ? 'var(--emerald)' : 'var(--muted)' }} aria-live="polite">
+              {result
+                ? `Analysis complete · ${result.hasGrid ? '192 parcels decoded from pixels' : result.hadImage ? 'image could not be decoded, using regional baseline' : 'regional baseline (no image)'}`
+                : 'Location & Image Notes label the map. Analysis classifies every parcel.'}
+            </p>
+          </div>
+        </section>
+
+        {/* RIGHT */}
+        <section className="lg:col-span-7 relative flex flex-col gap-3 min-h-0 min-w-0">
+          {!active ? (
+            <div className="panel flex-1 min-h-0 p-4 flex flex-col gap-4 fade-in lg:overflow-hidden">
+              <div className="shrink-0">
+                <h2 className="label" style={{ color: 'var(--fg)' }}>Getting Started</h2>
+                <div className="mt-3 flex flex-col md:flex-row items-stretch gap-2 md:gap-3">
+                  <div className="flex-1 rounded-lg p-3 flex gap-3 items-start" style={{ border: '1px solid rgba(34,211,238,.3)', background: 'rgba(34,211,238,.05)' }}>
+                    <span className="mono grid place-items-center w-7 h-7 rounded-full shrink-0 text-xs font-semibold" style={{ background: 'var(--cyan)', color: '#04202a' }}>1</span>
+                    <div><p className="text-[13px] font-semibold flex items-center gap-1.5"><Icon name="upload" size={14} /> Upload a SAR image</p>
+                      <p className="text-[11.5px] mt-0.5" style={{ color: 'var(--muted)' }}>Drop a radar scene on the left. It is sampled into a 16 × 12 parcel map.</p></div>
+                  </div>
+                  <span className="hidden md:grid place-items-center" style={{ color: 'var(--muted)' }}><Icon name="arrow" size={18} /></span>
+                  <div className="flex-1 rounded-lg p-3 flex gap-3 items-start" style={{ border: '1px solid #334155', background: 'rgba(15,23,42,.5)' }}>
+                    <span className="mono grid place-items-center w-7 h-7 rounded-full shrink-0 text-xs font-semibold" style={{ background: '#334155', color: 'var(--fg)' }}>2</span>
+                    <div><p className="text-[13px] font-semibold flex items-center gap-1.5"><Icon name="calendar" size={14} /> Scrub the timeline</p>
+                      <p className="text-[11.5px] mt-0.5" style={{ color: 'var(--muted)' }}>Monitor rice growth stages and flood risks from Dec 01 to Mar 07, then press Analyze Radar Data.</p></div>
+                  </div>
+                </div>
+              </div>
+              <div className="flex-1 min-h-0 flex flex-col gap-2">
+                <div className="flex items-center gap-2 shrink-0">
+                  <Icon name="book" size={14} />
+                  <h3 className="label" style={{ color: 'var(--fg)' }}>Radar Image Interpretation Guide</h3>
+                </div>
+                <p className="text-[11.5px] shrink-0" style={{ color: 'var(--muted)' }}>No radar training needed. Radar lights the ground itself, so brightness shows how a surface bounces the signal back. This is how each pixel becomes a map color:</p>
+                <Guide stats={null} />
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="panel p-3 flex flex-col min-h-[260px] lg:min-h-0 lg:flex-[65] fade-in">
+                <div className="flex flex-wrap items-center justify-between gap-2 shrink-0 mb-1">
+                  <h2 className="label" style={{ color: 'var(--fg)' }}>Rice Growth Backscatter (dB)</h2>
+                  <div className="flex items-center gap-4 text-[11px]">
+                    <span className="flex items-center gap-1.5"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#22d3ee" strokeWidth="2.5" /></svg> L-band</span>
+                    <span className="flex items-center gap-1.5"><svg width="22" height="6"><line x1="0" y1="3" x2="22" y2="3" stroke="#60a5fa" strokeWidth="2" strokeDasharray="5 3" /></svg> S-band</span>
+                    <button onClick={() => setGuideOpen(true)} className="flex items-center gap-1 px-2 py-1 rounded-md" style={{ border: '1px solid #334155', color: 'var(--cyan)' }}>
+                      <Icon name="book" size={12} /> Image guide
+                    </button>
+                  </div>
+                </div>
+                <BackscatterChart idx={idx} series={series} />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 lg:flex-[35] min-h-0 fade-in">
+                <Kpi label="Flooded Area" icon="droplets" accent="var(--cyan)">
+                  {result ? (
+                    <>
+                      <div className="mono text-2xl font-semibold leading-none" style={{ color: 'var(--cyan)' }}>{fmt(flooded)} <span className="text-sm font-normal" style={{ color: 'var(--muted)' }}>ha</span></div>
+                      <div className="mono text-xs mt-1.5" style={{ color: 'var(--muted)' }}>{parcels} parcels · {cur.date}</div>
+                      {grid && <div className="text-[10.5px] mt-1" style={{ color: 'var(--muted)' }}>Blue cells × {HA_PER_CELL} ha each</div>}
+                    </>
+                  ) : (
+                    <div className="text-xs" style={{ color: 'var(--muted)' }}><span className="mono text-2xl" style={{ color: '#334155' }}>-- ha</span><br />{touched ? 'Press Analyze Radar Data' : 'Run an analysis'}</div>
+                  )}
+                </Kpi>
+
+                <Kpi label="Current Rice Stage" icon="sprout" accent="var(--emerald)">
+                  {result ? (
+                    <>
+                      <div className="text-base font-semibold leading-tight" style={{ color: 'var(--emerald)' }}>{cur.stage}</div>
+                      <div className="mono text-xs mt-1.5" style={{ color: 'var(--muted)' }}>Day {cur.day} of 96</div>
+                      <div className="h-1 rounded-full mt-2" style={{ background: 'var(--line)' }}>
+                        <div className="h-1 rounded-full" style={{ width: `${(cur.day / 96) * 100}%`, background: 'var(--emerald)', transition: 'width 280ms' }} />
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-xs" style={{ color: 'var(--muted)' }}><span className="mono text-2xl" style={{ color: '#334155' }}>Day --</span><br />{touched ? 'Press Analyze Radar Data' : 'Run an analysis'}</div>
+                  )}
+                </Kpi>
+
+                <Kpi label="Disaster Alert" icon={result ? risk.icon : 'shield'} accent={result ? risk.color : 'var(--muted)'}
+                     border={result ? risk.color : 'var(--line)'} bg={result ? risk.bg : 'var(--panel)'}>
+                  {result ? (
+                    <>
+                      <span className="self-start text-[11px] font-semibold px-2 py-0.5 rounded-full mb-1.5" style={{ color: risk.color, border: `1px solid ${risk.color}`, background: 'rgba(2,6,23,.5)' }}>{risk.label}</span>
+                      <p className="text-[11.5px] leading-snug">{cur.rec}</p>
+                      {grid && grid.counts.alert > 0 && <p className="mono text-[10.5px] mt-1" style={{ color: 'var(--red)' }}>{grid.counts.alert} parcels outlined in red</p>}
+                    </>
+                  ) : (
+                    <div className="text-xs" style={{ color: 'var(--muted)' }}><span className="mono text-2xl" style={{ color: '#334155' }}>--</span><br />{touched ? 'Press Analyze Radar Data' : 'Run an analysis'}</div>
+                  )}
+                </Kpi>
+              </div>
+
+              {guideOpen && (
+                <div className="absolute inset-0 z-10 panel p-4 flex flex-col gap-3 fade-in overflow-auto" style={{ background: 'rgba(11,18,32,.98)', boxShadow: '0 10px 40px rgba(0,0,0,.6)' }} role="dialog" aria-label="Radar Image Interpretation Guide">
+                  <div className="flex items-center justify-between shrink-0">
+                    <h3 className="label flex items-center gap-2" style={{ color: 'var(--fg)' }}><Icon name="book" size={14} /> Radar Image Interpretation Guide</h3>
+                    <button onClick={() => setGuideOpen(false)} aria-label="Close guide" className="grid place-items-center w-7 h-7 rounded-md" style={{ border: '1px solid #334155' }}><Icon name="x" size={14} /></button>
+                  </div>
+                  <p className="text-[11.5px] shrink-0" style={{ color: 'var(--muted)' }}>Each parcel is the average of the pixels inside its cell. The timeline adds a seasonal offset (fields darken when flooded for sowing and brighten as the canopy closes), so cell colors change from date to date. Open-sea cells in the bottom-right are masked and stay deep blue on every date.{shares ? ' Bars show the share of each zone in your uploaded image.' : ''}</p>
+                  <Guide stats={shares} />
+                </div>
+              )}
+            </>
+          )}
+        </section>
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+
+</body></html>
